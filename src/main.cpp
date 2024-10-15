@@ -150,7 +150,6 @@ int main(int argc, char** argv) {
         for (const auto& data : vec) {
             int difference = CompareHash(images[data.index1]->hash, images[data.index2]->hash);
             if (difference < 50) {
-                std::lock_guard<std::mutex> lock(mutex);
                 std::cout << images[data.index1]->path << " | " << images[data.index2]->path << ": similar (difference = " << difference << ")" << std::endl;
             }
         }
