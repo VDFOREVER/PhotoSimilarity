@@ -7,6 +7,7 @@
 #include <mutex>
 #include <thread>
 #include <memory>
+#include <functional>
 
 #define THREAD_COUNT std::thread::hardware_concurrency()
 
@@ -25,7 +26,7 @@ std::vector<fs::path> allPhotos(const fs::path& path) {
 }
 
 template <typename T>
-std::vector<std::vector<T>> splitArray(const std::vector<T>& arr, int n) {
+std::vector<std::vector<T>> splitArray(std::vector<T>&& arr, int n) {
     int avg = arr.size() / n;
     int remainder = arr.size() % n;
 
@@ -34,7 +35,11 @@ std::vector<std::vector<T>> splitArray(const std::vector<T>& arr, int n) {
 
     for (int i = 0; i < n; ++i) {
         int end = start + avg + (i < remainder ? 1 : 0);
-        result[i] = std::vector<T>(arr.begin() + start, arr.begin() + end);
+        
+        result[i] = std::vector<T>(
+            std::make_move_iterator(arr.begin() + start),
+            std::make_move_iterator(arr.begin() + end)
+        );
         start = end;
     }
 
@@ -44,8 +49,10 @@ std::vector<std::vector<T>> splitArray(const std::vector<T>& arr, int n) {
 template <typename Func, typename T>
 void splitWorkOnThread(const Func& f, const std::vector<T>& vec) {
     std::vector<std::thread> threads;
+    threads.reserve(vec.size());
+    
     for(const auto& sub : vec) {
-        threads.emplace_back(f, sub);
+        threads.emplace_back(f, std::ref(sub));
     }
 
     for(auto& thread : threads) {
@@ -53,11 +60,11 @@ void splitWorkOnThread(const Func& f, const std::vector<T>& vec) {
     }
 }
 
-std::string CalcImageHash(const std::string& fileName) {
+std::array<char, 2304> CalcImageHash(const std::string& fileName) {
     Mat image = imread(fileName, IMREAD_COLOR);
     if (image.empty()) {
         std::cerr << "Error loading image: " << fileName << std::endl;
-        return "";
+        return {};
     }
 
     Mat resized;
@@ -71,13 +78,13 @@ std::string CalcImageHash(const std::string& fileName) {
     Mat threshold_image;
     threshold(gray_image, threshold_image, avg, 255, THRESH_BINARY);
 
-    std::string hash = "";
+    std::array<char, 2304> hash = {};
     for (int x = 0; x < 48; ++x) {
         for (int y = 0; y < 48; ++y) {
             if (threshold_image.at<uchar>(x, y) == 255) {
-                hash += "1";
+                hash[x * 48 + y] = '1';
             } else {
-                hash += "0";
+                hash[x * 48 + y] = '0';
             }
         }
     }
@@ -85,7 +92,7 @@ std::string CalcImageHash(const std::string& fileName) {
     return hash;
 }
 
-int CompareHash(const std::string& hash1, const std::string& hash2) {
+int CompareHash(const std::array<char, 2304>& hash1, const std::array<char, 2304>& hash2) {
     int count = 0;
     for (size_t i = 0; i < hash1.size(); ++i) {
         if (hash1[i] != hash2[i]) {
@@ -97,7 +104,7 @@ int CompareHash(const std::string& hash1, const std::string& hash2) {
 
 struct ImageData {
     fs::path path;
-    std::string hash;
+    std::array<char, 2304> hash;
 };
 
 struct TmpData {
@@ -120,10 +127,10 @@ int main(int argc, char** argv) {
     std::mutex mutex;
     std::vector<std::shared_ptr<ImageData>> images;
 
-    std::vector<std::vector<fs::path>> sub = splitArray(photos, THREAD_COUNT);
+    std::vector<std::vector<fs::path>> sub = splitArray(std::move(photos), THREAD_COUNT);
     auto LamdaFun = [&](const std::vector<fs::path> &vec) {
         for (const auto& photo : vec) {
-            std::string hash = CalcImageHash(photo.string());
+            std::array<char, 2304> hash = CalcImageHash(photo.string());
             if (hash.empty()) {
                 continue;
             }
@@ -139,13 +146,16 @@ int main(int argc, char** argv) {
     splitWorkOnThread(LamdaFun, sub);
 
     std::vector<TmpData> tmp;
+    size_t pair_count = (images.size() * (images.size() - 1)) / 2;
+    tmp.reserve(pair_count);
+
     for (size_t i = 0; i < images.size(); ++i) {
         for (size_t j = i + 1; j < images.size(); ++j) {
-            tmp.push_back({i, j});
+            tmp.emplace_back(i, j);
         }
     }
 
-    std::vector<std::vector<TmpData>> sub2 = splitArray(tmp, THREAD_COUNT);
+    std::vector<std::vector<TmpData>> sub2 = splitArray(std::move(tmp), THREAD_COUNT);
     auto LamdaFun2 = [&](const std::vector<TmpData> &vec) {
         for (const auto& data : vec) {
             int difference = CompareHash(images[data.index1]->hash, images[data.index2]->hash);
